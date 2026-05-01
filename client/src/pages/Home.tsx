@@ -12,7 +12,7 @@ export default function Home() {
       className="fixed inset-0 bg-black overflow-hidden"
       style={{ touchAction: "none" }}
     >
-      <PulseVisualizer amplification={4} />
+      <PulseVisualizer />
     </div>
   );
 }
