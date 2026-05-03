@@ -1,6 +1,15 @@
 # Face Blood — rPPG Pulse Visualizer
 
-**Face Blood** は、iPhone（および HTTPS 対応ブラウザ）のフロントカメラを使い、顔の微細な色変化から心拍数（BPM）をリアルタイムに推定し、**Eulerian Video Magnification（EVM）的な映像増幅**で脈拍の血色変化を派手に可視化する Web アプリです。
+**Face Blood** は、iPhone のフロントカメラを使い、顔の微細な色変化から心拍数（BPM）をリアルタイムに推定し、**Eulerian Video Magnification（EVM）的な映像増幅**で脈拍の血色変化を派手に可視化するアプリです。
+
+本リポジトリには **2 つの実装** が含まれます。
+
+| 実装 | パス | 技術スタック | 備考 |
+|---|---|---|---|
+| **Web 版** | [`/client`](./client) | React 19 + TypeScript + Canvas 2D | iPhone Safari など HTTPS ブラウザで動作。`https://faceblood-5daeuetf.manus.space` にデプロイ済み |
+| **iOS ネイティブ版** | [`/ios`](./ios) | SwiftUI + AVFoundation + Core Image (Metal) + Accelerate vDSP | Xcode 15 でビルドして実機にインストール。GPU フィルタで高フレームレート |
+
+両実装は同一の rPPG パイプライン（POS 法 + FFT）と 3 段階のビジュアルモード（SUBTLE / VIVID / EXTREME）を共有します。
 
 > "Our goal is to reveal temporal variations in videos that are difficult or impossible to see with the naked eye."
 > — Wu et al., *Eulerian Video Magnification*, SIGGRAPH 2012
