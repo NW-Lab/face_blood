@@ -72,6 +72,7 @@ const MODES: ModeSpec[] = [
 
 // ── types ──────────────────────────────────────────────────────────────────
 type Phase = "idle" | "calibrating" | "measuring" | "error";
+type FacingMode = "user" | "environment";
 
 // ── component ──────────────────────────────────────────────────────────────
 export default function PulseVisualizer() {
@@ -99,52 +100,115 @@ export default function PulseVisualizer() {
   const [waveformData, setWaveformData] = useState<number[]>([]);
   const [ampLevel, setAmpLevel] = useState(5);
   const [modeId, setModeId] = useState<ModeId>("vivid");
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [preferredFacingMode, setPreferredFacingMode] = useState<FacingMode>("user");
+  const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
 
   const mode = useMemo(
     () => MODES.find((m) => m.id === modeId) ?? MODES[1],
     [modeId],
   );
 
-  // ── camera start ──────────────────────────────────────────────────────────
-  const startCamera = useCallback(async () => {
-    setPhase("calibrating");
-    setErrorMsg("");
-    processorRef.current.reset();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: TARGET_FPS, max: 60 },
-        },
-        audio: false,
-      });
-      const video = videoRef.current!;
-      video.srcObject = stream;
-      await video.play();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setErrorMsg(`カメラを起動できませんでした: ${msg}`);
-      setPhase("error");
-    }
-  }, []);
-
-  // ── camera stop ───────────────────────────────────────────────────────────
-  const stopCamera = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
+  const stopStreamTracks = useCallback(() => {
     const video = videoRef.current;
     if (video?.srcObject) {
       (video.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
       video.srcObject = null;
     }
+  }, []);
+
+  const refreshCameraDevices = useCallback(async (currentDeviceId?: string) => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((d) => d.kind === "videoinput");
+    setCameraDevices(inputs);
+    if (currentDeviceId) {
+      setSelectedDeviceId(currentDeviceId);
+      return;
+    }
+    if (!selectedDeviceId && inputs[0]) {
+      setSelectedDeviceId(inputs[0].deviceId);
+    }
+  }, [selectedDeviceId]);
+
+  // ── camera start ──────────────────────────────────────────────────────────
+  const startCamera = useCallback(async (opts?: { deviceId?: string; facingMode?: FacingMode }) => {
+    setPhase("calibrating");
+    setErrorMsg("");
+    processorRef.current.reset();
+    try {
+      stopStreamTracks();
+      const videoConstraints: MediaTrackConstraints = {
+        width: { ideal: 640 },
+        height: { ideal: 480 },
+        frameRate: { ideal: TARGET_FPS, max: 60 },
+      };
+      if (opts?.deviceId) {
+        videoConstraints.deviceId = { exact: opts.deviceId };
+      } else {
+        videoConstraints.facingMode = opts?.facingMode ?? preferredFacingMode;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: videoConstraints,
+        audio: false,
+      });
+      const video = videoRef.current!;
+      video.srcObject = stream;
+      await video.play();
+
+      const track = stream.getVideoTracks()[0];
+      const settings = track?.getSettings();
+      const activeDeviceId =
+        typeof settings?.deviceId === "string" ? settings.deviceId : undefined;
+      if (settings?.facingMode === "user" || settings?.facingMode === "environment") {
+        setPreferredFacingMode(settings.facingMode);
+      }
+      await refreshCameraDevices(activeDeviceId);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setErrorMsg(`カメラを起動できませんでした: ${msg}`);
+      setPhase("error");
+    }
+  }, [preferredFacingMode, refreshCameraDevices, stopStreamTracks]);
+
+  // ── camera stop ───────────────────────────────────────────────────────────
+  const stopCamera = useCallback(() => {
+    cancelAnimationFrame(rafRef.current);
+    stopStreamTracks();
     processorRef.current.reset();
     setPhase("idle");
     setResult(null);
     setSampleCount(0);
     setWaveformData([]);
     smoothPulseRef.current = 0;
-  }, []);
+  }, [stopStreamTracks]);
+
+  const switchCamera = useCallback(async () => {
+    if (isSwitchingCamera) return;
+    setIsSwitchingCamera(true);
+    setErrorMsg("");
+    try {
+      if (cameraDevices.length > 1) {
+        const currentIndex = cameraDevices.findIndex((d) => d.deviceId === selectedDeviceId);
+        const nextIndex = currentIndex >= 0
+          ? (currentIndex + 1) % cameraDevices.length
+          : 0;
+        const nextDevice = cameraDevices[nextIndex];
+        await startCamera({ deviceId: nextDevice.deviceId });
+        return;
+      }
+
+      // Fallback for browsers that do not expose multiple device IDs.
+      const nextFacingMode: FacingMode =
+        preferredFacingMode === "user" ? "environment" : "user";
+      setPreferredFacingMode(nextFacingMode);
+      await startCamera({ facingMode: nextFacingMode });
+    } finally {
+      setIsSwitchingCamera(false);
+    }
+  }, [cameraDevices, isSwitchingCamera, preferredFacingMode, selectedDeviceId, startCamera]);
 
   // ── main render loop ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -607,12 +671,21 @@ export default function PulseVisualizer() {
               ? `${Math.round(calibProgress)}%`
               : `FPS ${fpsDisplay}`}
           </span>
-          <button
-            onClick={stopCamera}
-            className="hud-label text-destructive hover:brightness-125 transition-colors"
-          >
-            STOP
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={switchCamera}
+              disabled={isSwitchingCamera}
+              className="hud-label text-accent hover:brightness-125 transition-colors disabled:opacity-50"
+            >
+              {isSwitchingCamera ? "CAM..." : "CAM"}
+            </button>
+            <button
+              onClick={stopCamera}
+              className="hud-label text-destructive hover:brightness-125 transition-colors"
+            >
+              STOP
+            </button>
+          </div>
         </div>
       )}
 
