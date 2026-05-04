@@ -1,6 +1,6 @@
 # Face Blood — iOS Native (SwiftUI)
 
-Web版（`/client`）と同じアルゴリズムを **Swift / SwiftUI / AVFoundation / Core Image / Accelerate** でネイティブ実装したものです。Web版より高フレームレートで安定動作し、GPU フィルタによる肌色シフトもより滑らかに表現できます。
+Web版（`/web/client`）と同じアルゴリズムを **Swift / SwiftUI / AVFoundation / Core Image / Accelerate** でネイティブ実装したものです。Web版より高フレームレートで安定動作し、GPU フィルタによる肌色シフトもより滑らかに表現できます。
 
 ## ディレクトリ構成
 
@@ -125,11 +125,11 @@ CIColorKernel のソースは `PulseAmplifier.extremeKernelSource` に直接記�
 
 ## Web 版との対応関係
 
-| Web 版 (`/client`) | iOS 版 (`/ios`) |
+| Web 版 (`/web/client`) | iOS 版 (`/ios`) |
 |---|---|
-| `client/src/lib/rppg.ts` | `RppgProcessor.swift` |
-| `client/src/components/PulseVisualizer.tsx`（カメラ部） | `CameraController.swift` |
-| `client/src/components/PulseVisualizer.tsx`（描画部） | `PulseAmplifier.swift` + `ContentView.swift` |
+| `web/client/src/lib/rppg.ts` | `RppgProcessor.swift` |
+| `web/client/src/components/PulseVisualizer.tsx`（カメラ部） | `CameraController.swift` |
+| `web/client/src/components/PulseVisualizer.tsx`（描画部） | `PulseAmplifier.swift` + `ContentView.swift` |
 | `useState<ModeID>` | `@Published var modeID` |
 | Canvas 2D `getImageData` ループ | `CIColorKernel` GPU シェーダ |
 | `requestAnimationFrame` | `AVCaptureVideoDataOutputSampleBufferDelegate` |

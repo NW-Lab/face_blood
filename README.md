@@ -6,8 +6,19 @@
 
 | 実装 | パス | 技術スタック | 備考 |
 |---|---|---|---|
-| **Web 版** | [`/client`](./client) | React 19 + TypeScript + Canvas 2D | iPhone Safari など HTTPS ブラウザで動作。`https://faceblood-5daeuetf.manus.space` にデプロイ済み |
+| **Web 版** | [`/web`](./web) | React 19 + TypeScript + Canvas 2D | iPhone Safari など HTTPS ブラウザで動作。`https://faceblood-5daeuetf.manus.space` にデプロイ済み |
 | **iOS ネイティブ版** | [`/ios`](./ios) | SwiftUI + AVFoundation + Core Image (Metal) + Accelerate vDSP | Xcode 15 でビルドして実機にインストール。GPU フィルタで高フレームレート |
+
+```
+face_blood/
+├── web/          ← Web アプリ（React + Vite + TypeScript）
+│   ├── client/   ← フロントエンド
+│   ├── server/   ← バックエンド（Express）
+│   ├── shared/   ← 共有コード
+│   └── ...       ← 設定ファイル（package.json, vite.config.ts 等）
+└── ios/          ← iOS ネイティブアプリ（SwiftUI）
+    └── FaceBlood/
+```
 
 両実装は同一の rPPG パイプライン（POS 法 + FFT）と 3 段階のビジュアルモード（SUBTLE / VIVID / EXTREME）を共有します。
 
@@ -103,6 +114,9 @@ rPPG 信号の瞬時値 `s(t)` を用いて、顔の色をリアルタイムに�
 ## 開発環境のセットアップ
 
 ```bash
+# web ディレクトリへ移動
+cd web
+
 # 依存インストール
 pnpm install
 
