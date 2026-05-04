@@ -6,7 +6,7 @@
 
 | 実装 | パス | 技術スタック | 備考 |
 |---|---|---|---|
-| **Web 版** | [`/client`](./client) | React 19 + TypeScript + Canvas 2D | iPhone Safari など HTTPS ブラウザで動作。`https://faceblood-5daeuetf.manus.space` にデプロイ済み |
+| **Web 版** | [`/Web/client`](./Web/client) | React 19 + TypeScript + Canvas 2D | iPhone Safari など HTTPS ブラウザで動作。`https://faceblood-5daeuetf.manus.space` にデプロイ済み |
 | **iOS ネイティブ版** | [`/ios`](./ios) | SwiftUI + AVFoundation + Core Image (Metal) + Accelerate vDSP | Xcode 15 でビルドして実機にインストール。GPU フィルタで高フレームレート |
 
 両実装は同一の rPPG パイプライン（POS 法 + FFT）と 3 段階のビジュアルモード（SUBTLE / VIVID / EXTREME）を共有します。
