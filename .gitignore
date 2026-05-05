@@ -110,3 +110,18 @@ Web/.webdev/
 
 # Manus version file (auto-generated, not part of source)
 Web/client/public/__manus__/version.json
+
+# Visual Studio / WinUI local artifacts
+.vs/
+Win/.vs/
+Win/.github/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# .NET / WinUI build outputs
+bin/
+obj/
+Win/**/bin/
+Win/**/obj/

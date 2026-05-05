@@ -1,3 +1,5 @@
 <Solution>
-  <Project Path="FaceBlood.WinUI3/FaceBlood.WinUI3.csproj" />
+  <Project Path="FaceBlood.WinUI3/FaceBlood.WinUI3.csproj">
+    <Platform Solution="Debug|*" Project="x64" />
+  </Project>
 </Solution>

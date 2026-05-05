@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using FaceBlood_WinUI3.Models;
 using FaceBlood_WinUI3.Services;
@@ -16,6 +18,7 @@ using Windows.Foundation;
 using Windows.Graphics.Imaging;
 using Windows.Media;
 using Windows.Media.Capture;
+using Windows.Media.Capture.Frames;
 using Windows.Media.MediaProperties;
 using Windows.Storage.Streams;
 using Windows.UI;
@@ -30,22 +33,28 @@ namespace FaceBlood_WinUI3
         private const int WavePoints = 200;
         private const int PreviewWidth = 320;
         private const int PreviewHeight = 240;
+        private const int LightingHistorySize = 45;
 
         private readonly RppgProcessor _processor = new RppgProcessor(12);
         private readonly Stopwatch _timebase = new Stopwatch();
         private readonly List<double> _waveformDisplay = new List<double>();
+        private readonly Queue<double> _roiLumaHistory = new Queue<double>();
 
         private MediaCapture _mediaCapture;
+        private MediaFrameReader _frameReader;
         private DispatcherQueueTimer _captureTimer;
         private IReadOnlyList<DeviceInformation> _cameraDevices = new List<DeviceInformation>();
         private string _selectedDeviceId;
         private bool _isRunning;
         private bool _isCapturing;
         private bool _cameraSelectionReady;
+        private bool _isPreviewMirrored;
 
         private double _smoothPulse;
         private double _lastPhase;
         private byte[] _framePixels;
+        private SoftwareBitmap _latestFrame;
+        private readonly object _frameLock = new object();
 
         private Image _previewImage;
         private WriteableBitmap _previewBitmap;
@@ -53,18 +62,21 @@ namespace FaceBlood_WinUI3
         private Canvas _overlayCanvas;
         private Rectangle _roiRect;
         private TextBlock _statusText;
+        private TextBlock _lightingWarningText;
         private TextBlock _bpmText;
         private TextBlock _snrText;
         private TextBlock _confText;
         private TextBlock _fpsText;
         private TextBlock _samplesText;
         private TextBlock _freqText;
+        private Button _mirrorButton;
         private ComboBox _cameraSelector;
         private ComboBox _modeSelector;
         private Slider _ampSlider;
         private TextBlock _ampValueText;
         private Canvas _waveCanvas;
         private Line _waveMidLine;
+        private Line _waveNowLine;
         private Polyline _wavePolyline;
 
         public MainPage()
@@ -120,22 +132,74 @@ namespace FaceBlood_WinUI3
                 Foreground = new SolidColorBrush(Color.FromArgb(255, 141, 235, 255)),
                 Text = "IDLE",
             };
-            topBar.Children.Add(_statusText);
+
+            var statusStack = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                Spacing = 2,
+            };
+            statusStack.Children.Add(_statusText);
+
+            _lightingWarningText = new TextBlock
+            {
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = new SolidColorBrush(Color.FromArgb(230, 255, 196, 92)),
+                MaxWidth = 520,
+                Text = string.Empty,
+            };
+            statusStack.Children.Add(_lightingWarningText);
+            topBar.Children.Add(statusStack);
 
             var buttons = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 8,
             };
-            Grid.SetColumn(buttons, 1);
+            var buttonShell = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(168, 8, 12, 16)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(120, 141, 235, 255)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(8, 6, 8, 6),
+                Child = buttons,
+            };
+            Grid.SetColumn(buttonShell, 1);
 
-            var startButton = new Button { Content = "計測開始" };
+            var startButton = new Button
+            {
+                Content = "計測開始",
+                Background = new SolidColorBrush(Color.FromArgb(230, 20, 30, 40)),
+                Foreground = new SolidColorBrush(Colors.White),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(140, 141, 235, 255)),
+                BorderThickness = new Thickness(1),
+            };
             startButton.Click += StartButton_Click;
-            var stopButton = new Button { Content = "停止" };
+            var stopButton = new Button
+            {
+                Content = "停止",
+                Background = new SolidColorBrush(Color.FromArgb(220, 48, 20, 24)),
+                Foreground = new SolidColorBrush(Colors.White),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(160, 255, 140, 140)),
+                BorderThickness = new Thickness(1),
+            };
             stopButton.Click += StopButton_Click;
+
+            _mirrorButton = new Button
+            {
+                Content = "鏡像: OFF",
+                Background = new SolidColorBrush(Color.FromArgb(220, 20, 30, 40)),
+                Foreground = new SolidColorBrush(Colors.White),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(140, 141, 235, 255)),
+                BorderThickness = new Thickness(1),
+            };
+            _mirrorButton.Click += MirrorButton_Click;
+
             buttons.Children.Add(startButton);
             buttons.Children.Add(stopButton);
-            topBar.Children.Add(buttons);
+            buttons.Children.Add(_mirrorButton);
+            topBar.Children.Add(buttonShell);
             RootGrid.Children.Add(topBar);
 
             RootGrid.Children.Add(BuildLeftPanel());
@@ -184,10 +248,26 @@ namespace FaceBlood_WinUI3
             stack.Children.Add(new TextBlock { Text = "SNR", FontSize = 12, Foreground = new SolidColorBrush(Color.FromArgb(255, 141, 235, 255)) });
             _snrText = new TextBlock { Text = "--", FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromArgb(255, 141, 235, 255)) };
             stack.Children.Add(_snrText);
+            stack.Children.Add(new TextBlock
+            {
+                Text = "信号対雑音比(dB)。高いほど脈波がノイズに埋もれていない。",
+                FontSize = 10,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = new SolidColorBrush(Color.FromArgb(204, 170, 221, 238)),
+                MaxWidth = 210,
+            });
 
             stack.Children.Add(new TextBlock { Text = "CONF", FontSize = 12, Foreground = new SolidColorBrush(Color.FromArgb(255, 141, 235, 255)) });
             _confText = new TextBlock { Text = "--", FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromArgb(255, 141, 235, 255)) };
             stack.Children.Add(_confText);
+            stack.Children.Add(new TextBlock
+            {
+                Text = "推定信頼度(0-100%)。高いほどBPM推定が安定している。",
+                FontSize = 10,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = new SolidColorBrush(Color.FromArgb(204, 170, 221, 238)),
+                MaxWidth = 210,
+            });
 
             stack.Children.Add(new TextBlock { Text = "FPS", FontSize = 12, Foreground = new SolidColorBrush(Color.FromArgb(255, 141, 235, 255)) });
             _fpsText = new TextBlock { Text = "--", FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromArgb(255, 141, 235, 255)) };
@@ -283,6 +363,17 @@ namespace FaceBlood_WinUI3
             };
             _waveCanvas.Children.Add(_waveMidLine);
 
+            _waveNowLine = new Line
+            {
+                Stroke = new SolidColorBrush(Color.FromArgb(210, 240, 250, 255)),
+                StrokeThickness = 1.5,
+                X1 = 799,
+                X2 = 799,
+                Y1 = 0,
+                Y2 = 72,
+            };
+            _waveCanvas.Children.Add(_waveNowLine);
+
             _wavePolyline = new Polyline
             {
                 Stroke = new SolidColorBrush(Color.FromArgb(255, 72, 200, 255)),
@@ -354,6 +445,17 @@ namespace FaceBlood_WinUI3
                 return;
             }
 
+            if (_cameraDevices.Count == 0)
+            {
+                _statusText.Text = "カメラが見つからない";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_selectedDeviceId))
+            {
+                _selectedDeviceId = _cameraDevices[0].Id;
+            }
+
             try
             {
                 _mediaCapture = new MediaCapture();
@@ -363,12 +465,28 @@ namespace FaceBlood_WinUI3
                 initSettings.VideoDeviceId = _selectedDeviceId;
                 await _mediaCapture.InitializeAsync(initSettings);
 
-                await _mediaCapture.StartPreviewAsync();
+                var colorSource = _mediaCapture.FrameSources.Values.FirstOrDefault(
+                    source => source.Info.SourceKind == MediaFrameSourceKind.Color);
+                if (colorSource == null)
+                {
+                    throw new InvalidOperationException("Color frame source not found");
+                }
+
+                _frameReader = await _mediaCapture.CreateFrameReaderAsync(colorSource, MediaEncodingSubtypes.Bgra8);
+                _frameReader.AcquisitionMode = MediaFrameReaderAcquisitionMode.Realtime;
+                _frameReader.FrameArrived += FrameReader_FrameArrived;
+                var readerStatus = await _frameReader.StartAsync();
+                if (readerStatus != MediaFrameReaderStartStatus.Success)
+                {
+                    throw new InvalidOperationException("FrameReader start failed: " + readerStatus);
+                }
 
                 _processor.Reset();
                 _smoothPulse = 0;
                 _lastPhase = 0;
                 _waveformDisplay.Clear();
+                _roiLumaHistory.Clear();
+                _lightingWarningText.Text = string.Empty;
                 DrawWaveform();
 
                 _timebase.Restart();
@@ -379,12 +497,21 @@ namespace FaceBlood_WinUI3
             }
             catch (Exception ex)
             {
-                _statusText.Text = "起動失敗: " + ex.Message;
-                await StopCameraAsync();
+                await StopCameraAsync(false);
+
+                var hr = ex.HResult;
+                if (ex is UnauthorizedAccessException || hr == unchecked((int)0x80070005))
+                {
+                    _statusText.Text = "起動失敗: カメラ許可をWindows設定でONにして";
+                }
+                else
+                {
+                    _statusText.Text = "起動失敗: " + ex.Message + " (0x" + hr.ToString("X8") + ")";
+                }
             }
         }
 
-        private async Task StopCameraAsync()
+        private async Task StopCameraAsync(bool resetHud = true)
         {
             if (_captureTimer != null)
             {
@@ -398,7 +525,13 @@ namespace FaceBlood_WinUI3
             {
                 try
                 {
-                    await _mediaCapture.StopPreviewAsync();
+                    if (_frameReader != null)
+                    {
+                        _frameReader.FrameArrived -= FrameReader_FrameArrived;
+                        await _frameReader.StopAsync();
+                        _frameReader.Dispose();
+                        _frameReader = null;
+                    }
                 }
                 catch
                 {
@@ -408,13 +541,24 @@ namespace FaceBlood_WinUI3
                 _mediaCapture = null;
             }
 
+            lock (_frameLock)
+            {
+                _latestFrame?.Dispose();
+                _latestFrame = null;
+            }
+
             _previewImage.Source = null;
             _previewBitmap = null;
             _processor.Reset();
             _smoothPulse = 0;
             _waveformDisplay.Clear();
+            _roiLumaHistory.Clear();
+            _lightingWarningText.Text = string.Empty;
             DrawWaveform();
-            UpdateHudIdle();
+            if (resetHud)
+            {
+                UpdateHudIdle();
+            }
             ApplyOverlay(0, 0);
         }
 
@@ -440,30 +584,63 @@ namespace FaceBlood_WinUI3
             _isCapturing = true;
             try
             {
-                using (var frame = new VideoFrame(BitmapPixelFormat.Bgra8, PreviewWidth, PreviewHeight))
+                SoftwareBitmap frameCopy;
+                lock (_frameLock)
                 {
-                    await _mediaCapture.GetPreviewFrameAsync(frame);
-                    var bitmap = frame.SoftwareBitmap;
-                    if (bitmap == null)
-                    {
-                        return;
-                    }
-
-                    if (bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8)
-                    {
-                        bitmap = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8);
-                    }
-
-                    SampleAndAnalyze(bitmap);
+                    frameCopy = _latestFrame == null ? null : SoftwareBitmap.Copy(_latestFrame);
                 }
+
+                if (frameCopy == null)
+                {
+                    return;
+                }
+
+                using (frameCopy)
+                {
+                    SampleAndAnalyze(frameCopy);
+                }
+            }
+            catch (COMException ex)
+            {
+                _statusText.Text = "計測エラー: " + ex.Message + " (0x" + ex.HResult.ToString("X8") + ")";
+                await StopCameraAsync(false);
             }
             catch (Exception ex)
             {
-                _statusText.Text = "計測エラー: " + ex.Message;
+                _statusText.Text = "計測エラー: " + ex.Message + " (0x" + ex.HResult.ToString("X8") + ")";
+                await StopCameraAsync(false);
             }
             finally
             {
                 _isCapturing = false;
+            }
+        }
+
+        private void FrameReader_FrameArrived(MediaFrameReader sender, MediaFrameArrivedEventArgs args)
+        {
+            using (var frameRef = sender.TryAcquireLatestFrame())
+            {
+                var bitmap = frameRef?.VideoMediaFrame?.SoftwareBitmap;
+                if (bitmap == null)
+                {
+                    return;
+                }
+
+                SoftwareBitmap prepared;
+                if (bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8 || bitmap.BitmapAlphaMode != BitmapAlphaMode.Premultiplied)
+                {
+                    prepared = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+                }
+                else
+                {
+                    prepared = SoftwareBitmap.Copy(bitmap);
+                }
+
+                lock (_frameLock)
+                {
+                    _latestFrame?.Dispose();
+                    _latestFrame = prepared;
+                }
             }
         }
 
@@ -491,7 +668,13 @@ namespace FaceBlood_WinUI3
             var sumR = 0.0;
             var sumG = 0.0;
             var sumB = 0.0;
+            var sumLuma = 0.0;
+            var leftLuma = 0.0;
+            var rightLuma = 0.0;
+            var leftCount = 0;
+            var rightCount = 0;
             var count = 0;
+            var roiMidX = rx + (roiSize / 2);
 
             for (var y = ry; y < ry + roiSize; y += SampleStride)
             {
@@ -499,9 +682,25 @@ namespace FaceBlood_WinUI3
                 for (var x = rx; x < rx + roiSize; x += SampleStride)
                 {
                     var idx = (rowBase + x) * 4;
-                    sumB += _framePixels[idx];
-                    sumG += _framePixels[idx + 1];
-                    sumR += _framePixels[idx + 2];
+                    var b = _framePixels[idx];
+                    var g = _framePixels[idx + 1];
+                    var r = _framePixels[idx + 2];
+                    sumB += b;
+                    sumG += g;
+                    sumR += r;
+
+                    var luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+                    sumLuma += luma;
+                    if (x < roiMidX)
+                    {
+                        leftLuma += luma;
+                        leftCount++;
+                    }
+                    else
+                    {
+                        rightLuma += luma;
+                        rightCount++;
+                    }
                     count++;
                 }
             }
@@ -517,6 +716,11 @@ namespace FaceBlood_WinUI3
             sample.G = sumG / count;
             sample.B = sumB / count;
             _processor.Push(sample);
+
+            var meanLuma = sumLuma / count;
+            var meanLeft = leftCount > 0 ? leftLuma / leftCount : meanLuma;
+            var meanRight = rightCount > 0 ? rightLuma / rightCount : meanLuma;
+            UpdateLightingWarnings(meanLuma, meanLeft, meanRight);
 
             var sampleCount = _processor.Count;
             _samplesText.Text = sampleCount.ToString();
@@ -590,6 +794,7 @@ namespace FaceBlood_WinUI3
         private void UpdateHudIdle()
         {
             _statusText.Text = "IDLE";
+            _lightingWarningText.Text = string.Empty;
             _bpmText.Text = "--";
             _snrText.Text = "--";
             _confText.Text = "--";
@@ -598,8 +803,83 @@ namespace FaceBlood_WinUI3
             _samplesText.Text = "0";
         }
 
+        private void UpdateLightingWarnings(double meanLuma, double meanLeft, double meanRight)
+        {
+            _roiLumaHistory.Enqueue(meanLuma);
+            while (_roiLumaHistory.Count > LightingHistorySize)
+            {
+                _roiLumaHistory.Dequeue();
+            }
+
+            var lowLight = meanLuma < 58.0;
+            var imbalance = Math.Abs(meanLeft - meanRight) / Math.Max(1.0, meanLuma);
+            var unevenLighting = imbalance > 0.22;
+            var flicker = DetectFlicker();
+
+            var messages = new List<string>();
+            if (unevenLighting)
+            {
+                messages.Add("照明ムラ注意: 顔の左右をなるべく均一に照らして");
+            }
+
+            if (lowLight)
+            {
+                messages.Add("環境光不足: 画面より部屋の明るさを上げて");
+            }
+
+            if (flicker)
+            {
+                messages.Add("ちらつき光源の疑い: 点滅LED/古い蛍光灯を避けて");
+            }
+
+            _lightingWarningText.Text = messages.Count == 0 ? string.Empty : string.Join(" / ", messages);
+        }
+
+        private bool DetectFlicker()
+        {
+            if (_roiLumaHistory.Count < 18)
+            {
+                return false;
+            }
+
+            var values = _roiLumaHistory.ToArray();
+            var mean = values.Average();
+            if (mean < 1)
+            {
+                return false;
+            }
+
+            var signChanges = 0;
+            var absDiffSum = 0.0;
+            var lastSign = 0;
+            for (var i = 1; i < values.Length; i++)
+            {
+                var diff = values[i] - values[i - 1];
+                absDiffSum += Math.Abs(diff);
+                var sign = diff > 0 ? 1 : (diff < 0 ? -1 : 0);
+                if (sign != 0 && lastSign != 0 && sign != lastSign)
+                {
+                    signChanges++;
+                }
+
+                if (sign != 0)
+                {
+                    lastSign = sign;
+                }
+            }
+
+            var relJitter = absDiffSum / ((values.Length - 1) * mean);
+            var frequentFlip = signChanges > ((values.Length - 1) * 0.42);
+            return relJitter > 0.06 && frequentFlip;
+        }
+
         private void ApplyOverlay(double pulse, double confidence)
         {
+            if (_ampSlider == null || _colorWash == null || _roiRect == null)
+            {
+                return;
+            }
+
             double ampScale;
             Color systole;
             Color diastole;
@@ -646,6 +926,11 @@ namespace FaceBlood_WinUI3
 
         private PulseMode GetSelectedMode()
         {
+            if (_modeSelector == null)
+            {
+                return PulseMode.Vivid;
+            }
+
             var item = _modeSelector.SelectedItem as ComboBoxItem;
             if (item != null && item.Tag is string)
             {
@@ -672,6 +957,12 @@ namespace FaceBlood_WinUI3
             _waveMidLine.X2 = width;
             _waveMidLine.Y1 = height / 2.0;
             _waveMidLine.Y2 = height / 2.0;
+
+            var nowX = Math.Max(0, width - 1);
+            _waveNowLine.X1 = nowX;
+            _waveNowLine.X2 = nowX;
+            _waveNowLine.Y1 = 0;
+            _waveNowLine.Y2 = height;
 
             var points = new PointCollection();
             if (_waveformDisplay.Count >= 2)
@@ -708,6 +999,29 @@ namespace FaceBlood_WinUI3
         {
             UpdateRoiRect();
             DrawWaveform();
+            UpdatePreviewTransform();
+        }
+
+        private void MirrorButton_Click(object sender, RoutedEventArgs e)
+        {
+            _isPreviewMirrored = !_isPreviewMirrored;
+            _mirrorButton.Content = _isPreviewMirrored ? "鏡像: ON" : "鏡像: OFF";
+            UpdatePreviewTransform();
+        }
+
+        private void UpdatePreviewTransform()
+        {
+            if (_previewImage == null)
+            {
+                return;
+            }
+
+            _previewImage.RenderTransformOrigin = new Point(0.5, 0.5);
+            _previewImage.RenderTransform = new ScaleTransform
+            {
+                ScaleX = _isPreviewMirrored ? -1 : 1,
+                ScaleY = 1,
+            };
         }
 
         private void UpdateRoiRect()
