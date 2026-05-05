@@ -2,12 +2,13 @@
 
 **Face Blood** は、iPhone のフロントカメラを使い、顔の微細な色変化から心拍数（BPM）をリアルタイムに推定し、**Eulerian Video Magnification（EVM）的な映像増幅**で脈拍の血色変化を派手に可視化するアプリです。
 
-本リポジトリには **2 つの実装** が含まれます。
+本リポジトリには **3 つの実装** が含まれます。
 
 | 実装 | パス | 技術スタック | 備考 |
 |---|---|---|---|
 | **Web 版** | [`/Web/client`](./Web/client) | React 19 + TypeScript + Canvas 2D | iPhone Safari など HTTPS ブラウザで動作。`https://faceblood-5daeuetf.manus.space` にデプロイ済み |
 | **iOS ネイティブ版** | [`/ios`](./ios) | SwiftUI + AVFoundation + Core Image (Metal) + Accelerate vDSP | Xcode 15 でビルドして実機にインストール。GPU フィルタで高フレームレート |
+| **Windows 版** | [`/Win/FaceBlood.WinUI3`](./Win/FaceBlood.WinUI3) | WinUI 3 + C# + MediaCapture + SoftwareBitmap | Windows 11 向け。カメラROIからPOS+FFTでBPM推定しHUD表示 |
 
 両実装は同一の rPPG パイプライン（POS 法 + FFT）と 3 段階のビジュアルモード（SUBTLE / VIVID / EXTREME）を共有します。
 
@@ -111,6 +112,12 @@ pnpm dev
 
 # リリース前確認: 本番ビルド
 pnpm build
+
+# Windows版ビルド（x64）
+dotnet build ./Win/FaceBlood.WinUI3/FaceBlood.WinUI3.csproj -p:Platform=x64
+
+# Windows版実行（x64）
+dotnet run --project ./Win/FaceBlood.WinUI3/FaceBlood.WinUI3.csproj -p:Platform=x64
 ```
 
 ---
